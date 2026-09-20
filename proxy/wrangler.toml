@@ -1,0 +1,13 @@
+name = "claude-credit-proxy"
+main = "src/worker.ts"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "claude-credit-monitor"
+database_id = "b9321f9c-7405-411c-ae5c-3859cddfc39d"
+
+[vars]
+
+# PROXY_SHARED_SECRET is a secret — set via:
+#   wrangler secret put PROXY_SHARED_SECRET

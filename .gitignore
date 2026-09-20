@@ -1,0 +1,16 @@
+# Firmware credentials — never commit
+firmware/src/config.h
+
+# PlatformIO build output
+firmware/.pio/
+
+# Cloudflare Worker local secrets
+proxy/.dev.vars
+
+# Node / Wrangler
+proxy/node_modules/
+proxy/.wrangler/
+
+# OS
+.DS_Store
+Thumbs.db

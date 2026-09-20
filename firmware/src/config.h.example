@@ -1,0 +1,6 @@
+#pragma once
+#define WIFI_SSID        "YOUR_SSID"
+#define WIFI_PASSWORD    "YOUR_PASSWORD"
+#define PROXY_URL        "https://claude-credit-proxy.panudech31110.workers.dev/stats"
+#define PROXY_SECRET     "<same as PROXY_SHARED_SECRET>"
+#define POLL_INTERVAL_MS 120000   // 2 minutes
