@@ -1,4 +1,4 @@
-import type { Env } from "./types";
+import type { Env, OrgSpendRow } from "./types";
 
 interface TotalsRow {
   in_: number;
@@ -30,7 +30,7 @@ export async function handleStats(
   _request: Request,
   env: Env,
 ): Promise<Response> {
-  const [totals, day, week, buckets, rlRow] = await Promise.all([
+  const [totals, day, week, buckets, rlRow, orgSpend] = await Promise.all([
     env.DB.prepare(`
       SELECT
         COALESCE(SUM(input_tokens),0)          AS in_,
@@ -72,6 +72,8 @@ export async function handleStats(
     `).all<BucketRow>(),
 
     env.DB.prepare(`SELECT * FROM ratelimits WHERE id = 1`).first<RlRow>(),
+
+    env.DB.prepare(`SELECT * FROM org_spend WHERE id = 1`).first<OrgSpendRow>(),
   ]);
 
   const body: Record<string, unknown> = {
@@ -106,9 +108,50 @@ export async function handleStats(
     };
   }
 
+  // v3: month block — only when the Admin API has succeeded at least once
+  // (updated_at > 0). If omitted, the firmware falls back to the v2 layout.
+  if (orgSpend && orgSpend.updated_at > 0) {
+    body.month = buildMonth(orgSpend);
+  }
+
   return new Response(JSON.stringify(body), {
     headers: { "Content-Type": "application/json" },
   });
+}
+
+// v3: build the month block with burn-rate projection. All date math is in
+// Bangkok (UTC+7) to match the firmware clock and the "Day N / M" header.
+function buildMonth(row: OrgSpendRow): Record<string, unknown> {
+  const monthUsd = row.month_usd ?? 0;
+  const monthLimit = row.month_limit_usd ?? 0;
+
+  // Shift epoch by +7h, then read with UTC getters → Bangkok wall-clock.
+  const bkk = new Date(Date.now() + 7 * 3600 * 1000);
+  const year = bkk.getUTCFullYear();
+  const month0 = bkk.getUTCMonth(); // 0-based
+  const dayOfMonth = bkk.getUTCDate();
+  // Day 0 of next month = last day of this month.
+  const daysInMonth = new Date(Date.UTC(year, month0 + 1, 0)).getUTCDate();
+  const hoursIntoDay =
+    bkk.getUTCHours() + bkk.getUTCMinutes() / 60 + bkk.getUTCSeconds() / 3600;
+
+  // Avoid divide-by-zero on day 1 via max(…, 0.5).
+  const daysElapsed = dayOfMonth - 1 + hoursIntoDay / 24;
+  const burnPerDay = monthUsd / Math.max(daysElapsed, 0.5);
+  const projectedEomUsd = burnPerDay * daysInMonth;
+  const projectedEomPct = monthLimit > 0 ? projectedEomUsd / monthLimit : 0;
+
+  const r6 = (n: number) => Math.round(n * 1e6) / 1e6;
+  return {
+    usd: r6(monthUsd),
+    lim: r6(monthLimit),
+    credit: r6(row.credit_balance_usd ?? 0),
+    updated: row.updated_at,
+    day_of_month: dayOfMonth,
+    days_in_month: daysInMonth,
+    projected_eom_usd: r6(projectedEomUsd),
+    projected_eom_pct: r6(projectedEomPct),
+  };
 }
 
 function buildSparkline(rows: BucketRow[]): number[] {

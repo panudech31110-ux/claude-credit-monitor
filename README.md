@@ -1,6 +1,6 @@
 # Claude Credit Monitor
 
-Track Anthropic API usage in real time on a **Waveshare ESP32-S3-RLCD-4.2** (400×300 reflective monochrome LCD) — without needing an Organisation/Admin API key.
+Track Anthropic API usage in real time on a **Waveshare ESP32-S3-RLCD-4.2** (400×300 reflective monochrome LCD). Core per-call usage tracking needs only a standard API key; adding an **Admin API key** (optional, v3) unlocks real month-to-date spend, a budget % bar, and an end-of-month projection.
 
 ## How it works
 
@@ -10,15 +10,47 @@ Your code  →  Cloudflare Worker (/v1/messages)  →  api.anthropic.com
                     D1 database
                         ↑
               /stats  ← ESP32 polls every 2 min
+
+   (v3) Cron every 15 min  →  Admin API /v1/organizations/cost_report
+                        ↓  upserts org_spend singleton
+                    D1 database
 ```
 
 A Cloudflare Worker sits in front of `api.anthropic.com`. It proxies every request, strips your shared secret, injects the real Anthropic key, and writes one row to D1 per API call. A separate `/stats` endpoint aggregates 24-hour totals and a 7-day sparkline for the firmware to display.
 
+**v3** adds a scheduled (cron) handler that calls Anthropic's **Admin API** every 15 minutes for the organization's real month-to-date spend, stores it in the `org_spend` singleton table, and exposes it as a `month` block on `/stats`. The firmware renders this as a monthly-budget bar with burn-rate projection. If no Admin key is configured (the `month` block never appears), the firmware falls back to the v2 layout automatically.
+
 ## What you see on the display
+
+**v3 layout — when an Admin API key is configured (`/stats` includes `month`):**
 
 ```
 ┌──────────────────────────────────────────┐
-│ CLAUDE USAGE                    21:05    │  header (+ "!" on fetch error)
+│ ▌▌▌ CLAUDE API MONITOR      Day 27 / 30  │  header (WiFi glyph + date, Bangkok)
+├──────────────────────────────────────────┤
+│  MONTHLY BUDGET                          │  "!" prefix when ≥ 80% of cap
+│  $0.75 / $500                       <1%  │  month-to-date / cap, % right-aligned
+│  [███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]  │  fills proportionally; pinned at ≥100%
+│  Projected EOM: $0.83  (<1% of cap)      │  burn-rate projection to month end
+├──────────────────────────────────────────┤
+│  BURN RATE                               │  CREDIT BALANCE shown too if available
+│  $0.03 / day                             │  (no credit endpoint → full-width burn)
+├──────────────────────────────────────────┤
+│  RPM  ████████░░  42/60                  │  rate-limit headroom (RPM + ITPM only;
+│  ITPM █████████░  180K/200K             │  OTPM dropped for space)
+├──────────────────────────────────────────┤
+│  7-day spend ($)                         │  7-day sparkline
+│  ▂ ▃ ▁ ▅ ▂ ▇ ▄                          │  today = rightmost, outlined
+├──────────────────────────────────────────┤
+│  User btn: next view    Boot: refresh    │  footer
+└──────────────────────────────────────────┘
+```
+
+**v2 fallback layout — when no Admin key is set (`month` block absent):**
+
+```
+┌──────────────────────────────────────────┐
+│ ! Admin API not configured      21:05    │  warning replaces the title
 ├──────────────────────────────────────────┤
 │  TODAY              │  WEEK              │  calendar day (Bangkok UTC+7)
 │  $0.19              │  $1.34             │  and 7-day rolling cost
@@ -27,16 +59,11 @@ A Cloudflare Worker sits in front of `api.anthropic.com`. It proxies every reque
 │  24h  in:  12,345    cr:  5,000          │  24-hour rolling token counts
 │       out:  6,789    cc:    800          │
 ├──────────────────────────────────────────┤
-│  RPM  ████████░░  42/60                  │  rate-limit headroom bars
-│  ITPM █████████░  180K/200K             │  (hidden until first proxied call)
-│  OTPM ██████████  75K/80K               │  <50% → outlined; <20% → inverted+!
-├──────────────────────────────────────────┤
-│  ▂ ▃ ▁ ▅ ▂ ▇ ▄                          │  7-day sparkline
-│  M  T  W  T  F  S  S                    │  today = rightmost, outlined
+│  RPM/ITPM/OTPM bars + 7-day sparkline    │  identical to v2
 └──────────────────────────────────────────┘
 ```
 
-The rate-limit section is hidden (and the sparkline expands to fill the space) until the first API call flows through the proxy and populates the `ratelimits` table.
+The rate-limit section is hidden (and the sparkline expands to fill the space) until the first API call flows through the proxy and populates the `ratelimits` table. The firmware switches between the two layouts automatically based on whether `/stats` returns a `month` block.
 
 ---
 
@@ -49,6 +76,7 @@ The rate-limit section is hidden (and the sparkline expands to fill the space) u
 | PlatformIO Core | `pip install platformio` or [IDE plugin](https://platformio.org/install) |
 | A Cloudflare account | Free tier works |
 | Anthropic API key | `sk-ant-api03-…` |
+| Admin API key (optional, v3) | `sk-ant-admin-…` — for real monthly spend |
 
 ---
 
@@ -82,20 +110,23 @@ database_id   = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"   # ← paste here
 # Against the remote (production) database
 wrangler d1 execute claude-credit-db --file=schema.sql --remote
 wrangler d1 execute claude-credit-db --file=schema_v2.sql --remote
+wrangler d1 execute claude-credit-db --file=schema_v3.sql --remote
 
 # Or against the local dev database
 wrangler d1 execute claude-credit-db --file=schema.sql
 wrangler d1 execute claude-credit-db --file=schema_v2.sql
+wrangler d1 execute claude-credit-db --file=schema_v3.sql
 ```
 
-`schema_v2.sql` adds the `ratelimits` singleton table used for rate-limit headroom display. It is safe to run against an existing database — it uses `CREATE TABLE IF NOT EXISTS` and `INSERT OR IGNORE`.
+`schema_v2.sql` adds the `ratelimits` singleton table used for rate-limit headroom display. `schema_v3.sql` adds the `org_spend` singleton table used for monthly spend. Both are safe to run against an existing database — they use `INSERT OR IGNORE` for the singleton row.
 
 #### Migrating an existing deployment
 
-If you already have v1 deployed, apply only the v2 schema (the `usage` table is unchanged):
+If you already have v1/v2 deployed, apply only the newer schema(s) (the `usage` table is unchanged):
 
 ```bash
-wrangler d1 execute claude-credit-db --file=schema_v2.sql --remote
+wrangler d1 execute claude-credit-db --file=schema_v2.sql --remote   # if upgrading from v1
+wrangler d1 execute claude-credit-db --file=schema_v3.sql --remote   # for v3 monthly spend
 ```
 
 Then redeploy the worker:
@@ -113,6 +144,20 @@ wrangler secret put ANTHROPIC_API_KEY
 wrangler secret put PROXY_SHARED_SECRET
 # paste: <32-char random hex, e.g. from `openssl rand -hex 16`>
 ```
+
+#### (v3, optional) Admin API key for monthly spend
+
+To show real month-to-date spend, create an **Admin** key and store it as a secret:
+
+1. In the [Anthropic Console](https://console.anthropic.com), go to **Settings → Admin Keys → Create Key** and copy the `sk-ant-admin-…` value.
+2. Store it (never paste it into code, a commit, or `/stats`):
+
+   ```bash
+   wrangler secret put ADMIN_API_KEY
+   # paste: sk-ant-admin-...
+   ```
+
+The cron trigger (`[triggers] crons = ["*/15 * * * *"]` in `wrangler.toml`) and the `MONTHLY_LIMIT_USD` config var (default `"500"`) are already set. The monthly cap comes from `MONTHLY_LIMIT_USD` because Anthropic's **Spend Limits API is Enterprise-only** and not available to Console organizations — set this to your tier cap (shown on the Console *Rate limits* page). Skip this step entirely and the firmware falls back to the v2 layout with an "Admin API not configured" header.
 
 For local dev, copy the example file instead:
 
@@ -240,9 +285,10 @@ stats: in=12345 out=6789 usd=0.1900
   day: in=8000 out=4000 usd=0.1100
   week: in=50000 out=25000 usd=0.7200
   rl: rpm=42/60 itpm=180000/200000 otpm=75000/80000
+  month: usd=0.75 lim=500.00 proj=0.83 (day 27/30)
 ```
 
-The `rl:` line appears only after the first API call flows through the proxy.
+The `rl:` line appears only after the first API call flows through the proxy. The `month:` line appears once the v3 cron has populated `org_spend` (otherwise it logs `month: (absent — fallback to v2 layout)`).
 
 The display shows "connecting…" → "syncing time…" → "fetching…" → full layout.
 
@@ -332,13 +378,15 @@ claude-credit-monitor/
 ├── README.md
 ├── proxy/
 │   ├── src/
-│   │   ├── worker.ts       # Auth, proxy pass-through, D1 logging
+│   │   ├── worker.ts       # Auth, proxy pass-through, D1 logging, cron entry
+│   │   ├── scheduled.ts    # (v3) 15-min cron: Admin API → org_spend
 │   │   ├── pricing.ts      # Model → USD/1M token rates
-│   │   ├── stats.ts        # /stats endpoint
+│   │   ├── stats.ts        # /stats endpoint (+ v3 month block)
 │   │   └── types.ts        # Shared TypeScript interfaces
 │   ├── schema.sql          # D1 usage table
 │   ├── schema_v2.sql       # D1 ratelimits table (additive — safe to run on existing DB)
-│   ├── wrangler.toml       # Worker name, D1 binding
+│   ├── schema_v3.sql       # D1 org_spend table (additive — safe to run on existing DB)
+│   ├── wrangler.toml       # Worker name, D1 binding, cron trigger, MONTHLY_LIMIT_USD
 │   ├── package.json
 │   ├── tsconfig.json
 │   └── .dev.vars.example
@@ -361,3 +409,6 @@ claude-credit-monitor/
 - On-board sensors (SHTC3 temp/humidity, PCF85063 RTC, ES8311 audio) are not used.
 - Pricing table requires a manual update when Anthropic adds models.
 - Rate-limit bars remain hidden until at least one API call is proxied (Anthropic only sends rate-limit headers in API responses, not proactively).
+- **(v3) Monthly cap** is read from the `MONTHLY_LIMIT_USD` config var, not an API — Anthropic's Spend Limits API is Enterprise-only (not available to Console organizations). Keep it in sync with your tier cap on the Console *Rate limits* page.
+- **(v3) Credit balance** is not shown — the Admin API exposes no credit-balance endpoint, so the firmware hides that field and the burn-rate value spans full width.
+- **(v3) Month-to-date spend** can lag real usage by up to a few hours (Admin API cost data refreshes periodically) and is polled only every 15 minutes.

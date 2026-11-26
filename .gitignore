@@ -4,6 +4,10 @@ firmware/src/config.h
 # PlatformIO build output
 firmware/.pio/
 
+# Local PlatformIO / Python venv (pio.exe, site-packages, etc.)
+firmware/Scripts/
+firmware/lib/
+
 # Cloudflare Worker local secrets
 proxy/.dev.vars
 

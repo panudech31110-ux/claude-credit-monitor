@@ -1,5 +1,6 @@
 import type { Env, AnthropicUsage, RateLimitData } from "./types";
 import { handleStats } from "./stats";
+import { runScheduled } from "./scheduled";
 import { getPricing, calcCost } from "./pricing";
 
 const ANTHROPIC_BASE = "https://api.anthropic.com";
@@ -7,7 +8,8 @@ const DEFAULT_VERSION = "2023-06-01";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const secret = request.headers.get("X-Proxy-Auth");
+    // Accept X-Proxy-Auth (firmware/curl) or x-api-key (Anthropic SDK / Claude Code)
+    const secret = request.headers.get("X-Proxy-Auth") ?? request.headers.get("x-api-key");
     if (!secret || secret !== env.PROXY_SHARED_SECRET) {
       return new Response("Unauthorized", { status: 401 });
     }
@@ -19,6 +21,14 @@ export default {
     }
 
     return proxyRequest(request, env, ctx, url);
+  },
+
+  // v3: cron trigger (every 15 min) — pull real org spend from the Admin API.
+  // Isolated from the /v1/messages pass-through; failures here never affect proxying.
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(
+      runScheduled(env).catch((e) => console.warn("scheduled handler error:", e)),
+    );
   },
 };
 

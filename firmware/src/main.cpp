@@ -111,6 +111,20 @@ static bool fetchStats(StatsData& out) {
   out.week.cache_creation = doc["week"]["cc"]  | 0L;
   out.week.cost_usd       = doc["week"]["usd"] | 0.0f;
 
+  // v3: month block (optional — present only if Admin API has succeeded)
+  JsonObject m = doc["month"];
+  out.month.valid = !m.isNull();
+  if (out.month.valid) {
+    out.month.usd               = m["usd"]               | 0.0f;
+    out.month.lim               = m["lim"]               | 0.0f;
+    out.month.credit            = m["credit"]            | 0.0f;
+    out.month.updated           = m["updated"]           | 0L;
+    out.month.day_of_month      = m["day_of_month"]      | 0;
+    out.month.days_in_month     = m["days_in_month"]     | 0;
+    out.month.projected_eom_usd = m["projected_eom_usd"] | 0.0f;
+    out.month.projected_eom_pct = m["projected_eom_pct"] | 0.0f;
+  }
+
   // v2: rate limits (optional)
   JsonObject rl = doc["rl"];
   out.rl_valid = !rl.isNull();
@@ -134,6 +148,13 @@ static bool fetchStats(StatsData& out) {
                   out.rl_rpm.rem, out.rl_rpm.lim,
                   out.rl_itpm.rem, out.rl_itpm.lim,
                   out.rl_otpm.rem, out.rl_otpm.lim);
+  if (out.month.valid)
+    Serial.printf("  month: usd=%.2f lim=%.2f proj=%.2f (day %d/%d)\n",
+                  (double)out.month.usd, (double)out.month.lim,
+                  (double)out.month.projected_eom_usd,
+                  out.month.day_of_month, out.month.days_in_month);
+  else
+    Serial.println("  month: (absent — fallback to v2 layout)");
   return true;
 }
 
