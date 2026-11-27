@@ -14,6 +14,21 @@ static DisplayST7305 disp;
 static StatsData      lastGood;
 static bool           hasData = false;
 
+// ── Buttons ───────────────────────────────────────────────────────────────────
+// Both buttons are active-low. We track the previous sampled level per button and
+// fire on the HIGH→LOW edge; sampling every 100 ms in loop() is its own debounce.
+static bool bootPrevHigh = true;   // idle (pull-up) = HIGH
+static bool userPrevHigh = true;
+static int  viewMode      = 0;     // reserved for future view cycling (no-op)
+
+// Returns true once per press (falling edge). prevHigh holds the last sampled level.
+static bool buttonPressed(int pin, bool& prevHigh) {
+  bool high    = (digitalRead(pin) == HIGH);
+  bool pressed = (prevHigh && !high);   // HIGH → LOW transition
+  prevHigh = high;
+  return pressed;
+}
+
 // ── Display helpers ───────────────────────────────────────────────────────────
 
 static void showMessage(const char* line1, const char* line2 = nullptr) {
@@ -187,6 +202,12 @@ void setup() {
   Serial.println("\nClaude Credit Monitor");
 
   disp.begin();
+
+  // Buttons: internal pull-ups, active-low. GPIO0 is the strapping/BOOT pin —
+  // safe to read as input once we're past reset.
+  pinMode(BTN_BOOT, INPUT_PULLUP);
+  pinMode(BTN_USER, INPUT_PULLUP);
+
   showMessage("connecting...");
 
   if (!connectWiFi()) {
@@ -204,10 +225,27 @@ void setup() {
 }
 
 void loop() {
-  // Sleep in 100 ms ticks for POLL_INTERVAL_MS, reconnecting if WiFi drops
+  // Sleep in 100 ms ticks for POLL_INTERVAL_MS, reconnecting if WiFi drops and
+  // polling the buttons each tick. A BOOT press cuts the wait short to refresh now.
   const unsigned long fetchAt = millis() + POLL_INTERVAL_MS;
-  while ((long)(millis() - fetchAt) < 0) {
+  bool forceFetch = false;
+
+  while (!forceFetch && (long)(millis() - fetchAt) < 0) {
     delay(100);
+
+    // BOOT → force an immediate /stats fetch
+    if (buttonPressed(BTN_BOOT, bootPrevHigh)) {
+      Serial.println("BOOT button → forcing refresh");
+      forceFetch = true;
+    }
+
+    // USER → cycle view (scaffolded no-op; just redraw current data for now)
+    if (buttonPressed(BTN_USER, userPrevHigh)) {
+      viewMode = (viewMode + 1) % 3;
+      Serial.printf("USER button → viewMode=%d (view cycling not yet implemented)\n", viewMode);
+      if (hasData) renderLayout(disp, lastGood);
+    }
+
     if (WiFi.status() != WL_CONNECTED) {
       Serial.println("WiFi lost — reconnecting");
       lastGood.fetch_error = true;

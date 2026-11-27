@@ -9,6 +9,10 @@ static constexpr int LCD_CS   = 40;
 static constexpr int LCD_DC   =  5;
 static constexpr int LCD_RST  = 41;
 
+// On-board push buttons (both active-low → INPUT_PULLUP, pressed reads LOW)
+static constexpr int BTN_BOOT = 0;    // BOOT (strapping pin) — force /stats refresh
+static constexpr int BTN_USER = 18;   // KEY — cycle view (scaffolded no-op)
+
 static constexpr int LCD_W = 400;
 static constexpr int LCD_H = 300;
 
