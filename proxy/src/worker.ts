@@ -1,6 +1,5 @@
 import type { Env, AnthropicUsage, RateLimitData } from "./types";
 import { handleStats } from "./stats";
-import { runScheduled } from "./scheduled";
 import { getPricing, calcCost } from "./pricing";
 
 const ANTHROPIC_BASE = "https://api.anthropic.com";
@@ -21,14 +20,6 @@ export default {
     }
 
     return proxyRequest(request, env, ctx, url);
-  },
-
-  // v3: cron trigger (every 15 min) — pull real org spend from the Admin API.
-  // Isolated from the /v1/messages pass-through; failures here never affect proxying.
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(
-      runScheduled(env).catch((e) => console.warn("scheduled handler error:", e)),
-    );
   },
 };
 
@@ -186,7 +177,8 @@ async function saveRateLimits(env: Env, rl: RateLimitData): Promise<void> {
       vals.push(rl[col] as number);
     }
   }
-  vals.push(1); // WHERE id = 1
+  // WHERE id = 1 is a literal (no placeholder) — do NOT bind an extra value here,
+  // or the binding count won't match the ? placeholders (D1_ERROR).
   await env.DB.prepare(
     `UPDATE ratelimits SET ${fields.join(", ")} WHERE id = 1`
   ).bind(...vals).run();

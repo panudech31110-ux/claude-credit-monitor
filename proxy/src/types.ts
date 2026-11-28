@@ -2,18 +2,8 @@ export interface Env {
   DB: D1Database;
   ANTHROPIC_API_KEY: string;
   PROXY_SHARED_SECRET: string;
-  // v3: Admin API (org cost/limits). Secret — set via `wrangler secret put ADMIN_API_KEY`.
-  ADMIN_API_KEY: string;
-  // v3: config fallback for the monthly spend cap when the Admin API doesn't expose it.
+  // v3: monthly spend cap for the budget bar ([vars] in wrangler.toml).
   MONTHLY_LIMIT_USD?: string;
-}
-
-export interface OrgSpendRow {
-  updated_at: number;
-  month_usd: number;
-  month_limit_usd: number;
-  credit_balance_usd: number;
-  month_start_ts: number;
 }
 
 export interface RateLimitData {

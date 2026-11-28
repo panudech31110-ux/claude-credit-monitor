@@ -7,15 +7,11 @@ binding = "DB"
 database_name = "claude-credit-monitor"
 database_id = "b9321f9c-7405-411c-ae5c-3859cddfc39d"
 
-# v3: run the Admin API spend pull every 15 minutes.
-[triggers]
-crons = ["*/15 * * * *"]
-
 [vars]
-# v3: config fallback for the monthly spend cap, used only when the Admin API
-# doesn't expose a limit. Not the source of truth — the Admin API/Console is.
+# v3: monthly spend cap shown on the budget bar. The /stats month block is
+# computed from our own usage log (the Admin API cost_report isn't enabled on
+# this account), so this is the source of truth for the cap.
 MONTHLY_LIMIT_USD = "500"
 
-# PROXY_SHARED_SECRET and ADMIN_API_KEY are secrets — set via:
+# PROXY_SHARED_SECRET is a secret — set via:
 #   wrangler secret put PROXY_SHARED_SECRET
-#   wrangler secret put ADMIN_API_KEY

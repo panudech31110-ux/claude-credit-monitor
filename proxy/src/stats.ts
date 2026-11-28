@@ -1,4 +1,6 @@
-import type { Env, OrgSpendRow } from "./types";
+import type { Env } from "./types";
+
+const DEFAULT_MONTHLY_LIMIT_USD = 500;
 
 interface TotalsRow {
   in_: number;
@@ -6,6 +8,11 @@ interface TotalsRow {
   cr: number;
   cc: number;
   usd: number;
+}
+
+interface MonthRow {
+  usd: number;
+  tok: number;
 }
 
 interface BucketRow {
@@ -30,7 +37,7 @@ export async function handleStats(
   _request: Request,
   env: Env,
 ): Promise<Response> {
-  const [totals, day, week, buckets, rlRow, orgSpend] = await Promise.all([
+  const [totals, day, week, buckets, rlRow, monthRow] = await Promise.all([
     env.DB.prepare(`
       SELECT
         COALESCE(SUM(input_tokens),0)          AS in_,
@@ -73,7 +80,14 @@ export async function handleStats(
 
     env.DB.prepare(`SELECT * FROM ratelimits WHERE id = 1`).first<RlRow>(),
 
-    env.DB.prepare(`SELECT * FROM org_spend WHERE id = 1`).first<OrgSpendRow>(),
+    // v3: month-to-date from our own usage log (calendar month, Bangkok UTC+7).
+    env.DB.prepare(`
+      SELECT
+        COALESCE(SUM(cost_usd),0)                AS usd,
+        COALESCE(SUM(input_tokens+output_tokens),0) AS tok
+      FROM usage
+      WHERE ts >= strftime('%s','now','+7 hours','start of month','-7 hours')
+    `).first<MonthRow>(),
   ]);
 
   const body: Record<string, unknown> = {
@@ -108,10 +122,15 @@ export async function handleStats(
     };
   }
 
-  // v3: month block — only when the Admin API has succeeded at least once
-  // (updated_at > 0). If omitted, the firmware falls back to the v2 layout.
-  if (orgSpend && orgSpend.updated_at > 0) {
-    body.month = buildMonth(orgSpend);
+  // v3: month block — computed from our own usage log (the Admin API cost_report
+  // isn't enabled on this account). Always present, so the firmware shows v3.
+  {
+    const monthLimit = parseMonthlyLimit(env);
+    body.month = buildMonth(
+      Math.round((monthRow?.usd ?? 0) * 1e6) / 1e6,
+      monthRow?.tok ?? 0,
+      monthLimit,
+    );
   }
 
   return new Response(JSON.stringify(body), {
@@ -119,12 +138,24 @@ export async function handleStats(
   });
 }
 
-// v3: build the month block with burn-rate projection. All date math is in
-// Bangkok (UTC+7) to match the firmware clock and the "Day N / M" header.
-function buildMonth(row: OrgSpendRow): Record<string, unknown> {
-  const monthUsd = row.month_usd ?? 0;
-  const monthLimit = row.month_limit_usd ?? 0;
+// Monthly cap from the MONTHLY_LIMIT_USD config var ([vars] in wrangler.toml),
+// falling back to a sane default. (Anthropic's Spend Limits API is Enterprise-only.)
+function parseMonthlyLimit(env: Env): number {
+  if (env.MONTHLY_LIMIT_USD) {
+    const n = parseFloat(env.MONTHLY_LIMIT_USD);
+    if (!isNaN(n) && n > 0) return n;
+  }
+  return DEFAULT_MONTHLY_LIMIT_USD;
+}
 
+// v3: build the month block with burn-rate projection. monthUsd is month-to-date
+// spend summed from the usage log. All date math is in Bangkok (UTC+7) to match
+// the firmware clock and the "Day N / M" header.
+function buildMonth(
+  monthUsd: number,
+  monthTok: number,
+  monthLimit: number,
+): Record<string, unknown> {
   // Shift epoch by +7h, then read with UTC getters → Bangkok wall-clock.
   const bkk = new Date(Date.now() + 7 * 3600 * 1000);
   const year = bkk.getUTCFullYear();
@@ -144,9 +175,10 @@ function buildMonth(row: OrgSpendRow): Record<string, unknown> {
   const r6 = (n: number) => Math.round(n * 1e6) / 1e6;
   return {
     usd: r6(monthUsd),
+    tok: monthTok,
     lim: r6(monthLimit),
-    credit: r6(row.credit_balance_usd ?? 0),
-    updated: row.updated_at,
+    credit: 0,                       // no credit-balance source → firmware hides it
+    updated: Math.floor(Date.now() / 1000),
     day_of_month: dayOfMonth,
     days_in_month: daysInMonth,
     projected_eom_usd: r6(projectedEomUsd),
