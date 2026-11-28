@@ -8,6 +8,10 @@ database_name = "claude-credit-monitor"
 database_id = "b9321f9c-7405-411c-ae5c-3859cddfc39d"
 
 [vars]
+# v3: monthly spend cap shown on the budget bar. The /stats month block is
+# computed from our own usage log (the Admin API cost_report isn't enabled on
+# this account), so this is the source of truth for the cap.
+MONTHLY_LIMIT_USD = "500"
 
 # PROXY_SHARED_SECRET is a secret — set via:
 #   wrangler secret put PROXY_SHARED_SECRET

@@ -9,6 +9,10 @@ static constexpr int LCD_CS   = 40;
 static constexpr int LCD_DC   =  5;
 static constexpr int LCD_RST  = 41;
 
+// On-board push buttons (both active-low → INPUT_PULLUP, pressed reads LOW)
+static constexpr int BTN_BOOT = 0;    // BOOT (strapping pin) — force /stats refresh
+static constexpr int BTN_USER = 18;   // KEY — cycle view (scaffolded no-op)
+
 static constexpr int LCD_W = 400;
 static constexpr int LCD_H = 300;
 
@@ -22,11 +26,15 @@ public:
   void begin();
   void clear();                                      // fill white
   void setPixel(int x, int y, bool on);             // on=true → black
-  void drawText(int x, int y, const char* txt, int size = 1);
+  void drawText(int x, int y, const char* txt, int size = 1, bool on = true);
   void drawRect(int x, int y, int w, int h, bool on);
   void drawHLine(int x, int y, int w, bool on);
   void fillRect(int x, int y, int w, int h, bool on);
   void refresh();                                    // push fb → display
+  // Push only screen columns x0..x1 (inclusive; widened to whole column pairs).
+  // The framebuffer stores each x pair as one 75-byte panel row, so this is a
+  // single contiguous write of (pairs × 75) bytes instead of 15 000.
+  void refreshColumns(int x0, int x1);
 
 private:
   uint8_t* fb = nullptr;

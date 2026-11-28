@@ -8,11 +8,30 @@
 #include <time.h>
 #include "display_st7305.h"
 #include "layout.h"
+#include "layout_v4.h"
 #include "config.h"
 
 static DisplayST7305 disp;
 static StatsData      lastGood;
 static bool           hasData = false;
+
+// ── Buttons ───────────────────────────────────────────────────────────────────
+// Both buttons are active-low. We track the previous sampled level per button and
+// fire on the HIGH→LOW edge; sampling every 100 ms in loop() is its own debounce.
+static bool bootPrevHigh = true;   // idle (pull-up) = HIGH
+static bool userPrevHigh = true;
+// KEY cycles views: 0 = v4 main (mascot + cards), 1 = v3 month/legacy layout.
+static const int VIEW_V4 = 0, VIEW_LEGACY = 1, VIEW_COUNT = 2;
+static int  viewMode      = VIEW_V4;
+static bool v4NeedsFull   = true;   // next v4 render must redraw + push everything
+
+// Returns true once per press (falling edge). prevHigh holds the last sampled level.
+static bool buttonPressed(int pin, bool& prevHigh) {
+  bool high    = (digitalRead(pin) == HIGH);
+  bool pressed = (prevHigh && !high);   // HIGH → LOW transition
+  prevHigh = high;
+  return pressed;
+}
 
 // ── Display helpers ───────────────────────────────────────────────────────────
 
@@ -111,6 +130,36 @@ static bool fetchStats(StatsData& out) {
   out.week.cache_creation = doc["week"]["cc"]  | 0L;
   out.week.cost_usd       = doc["week"]["usd"] | 0.0f;
 
+  // v3: month block (optional — present only if Admin API has succeeded)
+  JsonObject m = doc["month"];
+  out.month.valid = !m.isNull();
+  if (out.month.valid) {
+    out.month.usd               = m["usd"]               | 0.0f;
+    out.month.lim               = m["lim"]               | 0.0f;
+    out.month.credit            = m["credit"]            | 0.0f;
+    out.month.updated           = m["updated"]           | 0L;
+    out.month.day_of_month      = m["day_of_month"]      | 0;
+    out.month.days_in_month     = m["days_in_month"]     | 0;
+    out.month.projected_eom_usd = m["projected_eom_usd"] | 0.0f;
+    out.month.projected_eom_pct = m["projected_eom_pct"] | 0.0f;
+  }
+
+  // v4: cc block (optional). While bridge data is stale the Worker sends the old
+  // top-level "cc" number (cache-creation tokens) instead, so require an object.
+  JsonObject cc = doc["cc"].as<JsonObject>();
+  out.cc.valid = !cc.isNull();
+  if (out.cc.valid) {
+    out.cc.updated = cc["updated"] | 0L;
+    CcWindow* wins[3]        = {&out.cc.session, &out.cc.today, &out.cc.week};
+    const char* const names[3] = {"session", "today", "week"};
+    for (int i = 0; i < 3; i++) {
+      JsonObject w = cc[names[i]];
+      wins[i]->pct      = w["pct"]      | 0.0f;
+      wins[i]->cost     = w["cost"]     | 0.0f;
+      wins[i]->reset_at = w["reset_at"] | 0L;
+    }
+  }
+
   // v2: rate limits (optional)
   JsonObject rl = doc["rl"];
   out.rl_valid = !rl.isNull();
@@ -134,10 +183,53 @@ static bool fetchStats(StatsData& out) {
                   out.rl_rpm.rem, out.rl_rpm.lim,
                   out.rl_itpm.rem, out.rl_itpm.lim,
                   out.rl_otpm.rem, out.rl_otpm.lim);
+  if (out.month.valid)
+    Serial.printf("  month: usd=%.2f lim=%.2f proj=%.2f (day %d/%d)\n",
+                  (double)out.month.usd, (double)out.month.lim,
+                  (double)out.month.projected_eom_usd,
+                  out.month.day_of_month, out.month.days_in_month);
+  else
+    Serial.println("  month: (absent — fallback to v2 layout)");
+  if (out.cc.valid)
+    Serial.printf("  cc: session $%.2f %.1f%%  today $%.2f %.1f%%  week $%.2f %.1f%%\n",
+                  (double)out.cc.session.cost, (double)out.cc.session.pct * 100,
+                  (double)out.cc.today.cost,   (double)out.cc.today.pct * 100,
+                  (double)out.cc.week.cost,    (double)out.cc.week.pct * 100);
+  else
+    Serial.println("  cc: (absent — bridge offline)");
   return true;
 }
 
 // ── Render cycle ──────────────────────────────────────────────────────────────
+
+// Draws whichever view is selected. In v4, after the first full draw only the
+// card column is redrawn, and only when what it shows changed.
+static void renderCurrentView() {
+  if (viewMode == VIEW_V4) {
+    time_t now; time(&now);
+    const V4Data v = v4FromStats(lastGood, (long)now);
+    if (v4NeedsFull) {
+      v4RenderFull(disp, v, (long)now, millis());
+      v4NeedsFull = false;
+    } else if (v4UpdateCards(disp, v, (long)now)) {
+      Serial.println("cards changed → redrawn");
+    }
+  } else {
+    renderLayout(disp, lastGood);
+  }
+}
+
+// Serial test hook for the mascot: send 0-5 to force a state
+// (sleeping, idle, active, busy, critical, worried), 'a' for automatic.
+static void handleSerial() {
+  while (Serial.available()) {
+    int ch = Serial.read();
+    if (ch >= '0' && ch <= '5')  v4ForceMascotState(ch - '0');
+    else if (ch == 'a')          v4ForceMascotState(-1);
+    else continue;
+    Serial.printf("mascot state → %s%s\n", v4MascotStateName(), ch == 'a' ? " (auto)" : " (forced)");
+  }
+}
 
 static void doRender(bool fetchOk, StatsData& fresh) {
   stampTime(fresh.timestamp);
@@ -155,7 +247,7 @@ static void doRender(bool fetchOk, StatsData& fresh) {
   }
   // If !hasData and !fetchOk, lastGood is zero-initialised — renders a blank screen with "!"
 
-  renderLayout(disp, lastGood);
+  renderCurrentView();
 }
 
 // ── Entry points ──────────────────────────────────────────────────────────────
@@ -166,6 +258,12 @@ void setup() {
   Serial.println("\nClaude Credit Monitor");
 
   disp.begin();
+
+  // Buttons: internal pull-ups, active-low. GPIO0 is the strapping/BOOT pin —
+  // safe to read as input once we're past reset.
+  pinMode(BTN_BOOT, INPUT_PULLUP);
+  pinMode(BTN_USER, INPUT_PULLUP);
+
   showMessage("connecting...");
 
   if (!connectWiFi()) {
@@ -183,15 +281,38 @@ void setup() {
 }
 
 void loop() {
-  // Sleep in 100 ms ticks for POLL_INTERVAL_MS, reconnecting if WiFi drops
+  // Sleep in 100 ms ticks for POLL_INTERVAL_MS, reconnecting if WiFi drops and
+  // polling the buttons each tick. A BOOT press cuts the wait short to refresh now.
   const unsigned long fetchAt = millis() + POLL_INTERVAL_MS;
-  while ((long)(millis() - fetchAt) < 0) {
+  bool forceFetch = false;
+
+  while (!forceFetch && (long)(millis() - fetchAt) < 0) {
     delay(100);
+
+    // Mascot animation runs on its own cadence; it only pushes its own column.
+    handleSerial();
+    if (viewMode == VIEW_V4 && !v4NeedsFull) v4TickMascot(disp, millis());
+
+    // BOOT → force an immediate /stats fetch
+    if (buttonPressed(BTN_BOOT, bootPrevHigh)) {
+      Serial.println("BOOT button → forcing refresh");
+      forceFetch = true;
+    }
+
+    // USER (KEY) → toggle v4 main view ↔ v3 legacy view
+    if (buttonPressed(BTN_USER, userPrevHigh)) {
+      viewMode = (viewMode + 1) % VIEW_COUNT;
+      v4NeedsFull = true;
+      Serial.printf("USER button → viewMode=%d (%s)\n", viewMode,
+                    viewMode == VIEW_V4 ? "v4" : "legacy");
+      renderCurrentView();
+    }
+
     if (WiFi.status() != WL_CONNECTED) {
       Serial.println("WiFi lost — reconnecting");
       lastGood.fetch_error = true;
       stampTime(lastGood.timestamp);
-      renderLayout(disp, lastGood);   // show "!" while reconnecting
+      renderCurrentView();            // legacy view shows "!" while reconnecting
       connectWiFi();
     }
   }

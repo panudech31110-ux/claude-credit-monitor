@@ -1,4 +1,7 @@
 import type { Env } from "./types";
+import { loadCcBlock } from "./ingest";
+
+const DEFAULT_MONTHLY_LIMIT_USD = 500;
 
 interface TotalsRow {
   in_: number;
@@ -6,6 +9,11 @@ interface TotalsRow {
   cr: number;
   cc: number;
   usd: number;
+}
+
+interface MonthRow {
+  usd: number;
+  tok: number;
 }
 
 interface BucketRow {
@@ -30,7 +38,7 @@ export async function handleStats(
   _request: Request,
   env: Env,
 ): Promise<Response> {
-  const [totals, day, week, buckets, rlRow] = await Promise.all([
+  const [totals, day, week, buckets, rlRow, monthRow, ccBlock] = await Promise.all([
     env.DB.prepare(`
       SELECT
         COALESCE(SUM(input_tokens),0)          AS in_,
@@ -72,6 +80,18 @@ export async function handleStats(
     `).all<BucketRow>(),
 
     env.DB.prepare(`SELECT * FROM ratelimits WHERE id = 1`).first<RlRow>(),
+
+    // v3: month-to-date from our own usage log (calendar month, Bangkok UTC+7).
+    env.DB.prepare(`
+      SELECT
+        COALESCE(SUM(cost_usd),0)                AS usd,
+        COALESCE(SUM(input_tokens+output_tokens),0) AS tok
+      FROM usage
+      WHERE ts >= strftime('%s','now','+7 hours','start of month','-7 hours')
+    `).first<MonthRow>(),
+
+    // v4: Claude Code usage from the bridge; null when never ingested or stale.
+    loadCcBlock(env),
   ]);
 
   const body: Record<string, unknown> = {
@@ -106,9 +126,71 @@ export async function handleStats(
     };
   }
 
+  // v3: month block — computed from our own usage log (the Admin API cost_report
+  // isn't enabled on this account). Always present, so the firmware shows v3.
+  {
+    const monthLimit = parseMonthlyLimit(env);
+    body.month = buildMonth(
+      Math.round((monthRow?.usd ?? 0) * 1e6) / 1e6,
+      monthRow?.tok ?? 0,
+      monthLimit,
+    );
+  }
+
+  // v4: absent → firmware shows "bridge offline".
+  if (ccBlock) body.cc = ccBlock;
+
   return new Response(JSON.stringify(body), {
     headers: { "Content-Type": "application/json" },
   });
+}
+
+// Monthly cap from the MONTHLY_LIMIT_USD config var ([vars] in wrangler.toml),
+// falling back to a sane default. (Anthropic's Spend Limits API is Enterprise-only.)
+function parseMonthlyLimit(env: Env): number {
+  if (env.MONTHLY_LIMIT_USD) {
+    const n = parseFloat(env.MONTHLY_LIMIT_USD);
+    if (!isNaN(n) && n > 0) return n;
+  }
+  return DEFAULT_MONTHLY_LIMIT_USD;
+}
+
+// v3: build the month block with burn-rate projection. monthUsd is month-to-date
+// spend summed from the usage log. All date math is in Bangkok (UTC+7) to match
+// the firmware clock and the "Day N / M" header.
+function buildMonth(
+  monthUsd: number,
+  monthTok: number,
+  monthLimit: number,
+): Record<string, unknown> {
+  // Shift epoch by +7h, then read with UTC getters → Bangkok wall-clock.
+  const bkk = new Date(Date.now() + 7 * 3600 * 1000);
+  const year = bkk.getUTCFullYear();
+  const month0 = bkk.getUTCMonth(); // 0-based
+  const dayOfMonth = bkk.getUTCDate();
+  // Day 0 of next month = last day of this month.
+  const daysInMonth = new Date(Date.UTC(year, month0 + 1, 0)).getUTCDate();
+  const hoursIntoDay =
+    bkk.getUTCHours() + bkk.getUTCMinutes() / 60 + bkk.getUTCSeconds() / 3600;
+
+  // Avoid divide-by-zero on day 1 via max(…, 0.5).
+  const daysElapsed = dayOfMonth - 1 + hoursIntoDay / 24;
+  const burnPerDay = monthUsd / Math.max(daysElapsed, 0.5);
+  const projectedEomUsd = burnPerDay * daysInMonth;
+  const projectedEomPct = monthLimit > 0 ? projectedEomUsd / monthLimit : 0;
+
+  const r6 = (n: number) => Math.round(n * 1e6) / 1e6;
+  return {
+    usd: r6(monthUsd),
+    tok: monthTok,
+    lim: r6(monthLimit),
+    credit: 0,                       // no credit-balance source → firmware hides it
+    updated: Math.floor(Date.now() / 1000),
+    day_of_month: dayOfMonth,
+    days_in_month: daysInMonth,
+    projected_eom_usd: r6(projectedEomUsd),
+    projected_eom_pct: r6(projectedEomPct),
+  };
 }
 
 function buildSparkline(rows: BucketRow[]): number[] {

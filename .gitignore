@@ -4,6 +4,10 @@ firmware/src/config.h
 # PlatformIO build output
 firmware/.pio/
 
+# Local PlatformIO / Python venv (pio.exe, site-packages, etc.)
+firmware/Scripts/
+firmware/lib/
+
 # Cloudflare Worker local secrets
 proxy/.dev.vars
 
@@ -14,3 +18,10 @@ proxy/.wrangler/
 # OS
 .DS_Store
 Thumbs.db
+
+# v4 bridge local config (holds INGEST_SECRET)
+bridge/.env
+bridge/bridge.log*
+
+# Python bytecode cache
+__pycache__/
