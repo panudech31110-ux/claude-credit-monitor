@@ -111,14 +111,71 @@ static void fmtDollar(char* buf, size_t sz, float usd) {
   else               snprintf(buf, sz, "$%.2f", (double)usd);
 }
 
-static void drawStrip(DisplayST7305& d, const V4Data& data) {
-  if (!data.month_valid) return;
-  char u[12], l[12], line[40];
+static void fmtStrip(char* buf, size_t sz, const V4Data& data) {
+  if (!data.month_valid) { buf[0] = '\0'; return; }
+  char u[12], l[12];
   fmtDollar(u, sizeof(u), data.month_usd);
   fmtDollar(l, sizeof(l), data.month_lim);
-  snprintf(line, sizeof(line), "Month %s/%s", u, l);
+  snprintf(buf, sz, "Month %s/%s", u, l);
+}
+
+static void drawStrip(DisplayST7305& d, const V4Data& data) {
+  char line[40];
+  fmtStrip(line, sizeof(line), data);
   // Vertically centred in y=270..290, aligned with the card text column.
-  d.drawText(CARD_X + PAD_X, STRIP_Y + (20 - CAP * S_STRIP) / 2, line, S_STRIP);
+  if (line[0]) d.drawText(CARD_X + PAD_X, STRIP_Y + (20 - CAP * S_STRIP) / 2, line, S_STRIP);
+}
+
+// ── Regions & partial refresh ────────────────────────────────────────────────
+// The mascot column and the card column are redrawn and pushed independently
+// (DisplayST7305::refreshColumns), so an animation frame never touches the
+// cards and a card update never touches the mascot.
+static const int MASCOT_REGION_X0 = 0,   MASCOT_REGION_X1 = 145;  // ends on an odd x
+static const int CARDS_REGION_X0  = 146, CARDS_REGION_X1  = LCD_W - 1;
+
+// Set to 0 if partial pushes misbehave on the panel (wrong area / ghosting): every
+// update then pushes the full 15 KB frame instead (~12 ms at 10 MHz SPI). The
+// change detection above still applies either way.
+#ifndef V4_PARTIAL_REFRESH
+#define V4_PARTIAL_REFRESH 1
+#endif
+
+static void pushColumns(DisplayST7305& d, int x0, int x1) {
+#if V4_PARTIAL_REFRESH
+  d.refreshColumns(x0, x1);
+#else
+  (void)x0; (void)x1;
+  d.refresh();
+#endif
+}
+
+// ── Card change detection ─────────────────────────────────────────────────────
+// A "signature" of exactly what the card column would show: % text, bar fill
+// and warning state, reset line, and the Month strip. Cards are redrawn only
+// when it changes — i.e. on new data, or when a countdown ticks to a new minute.
+
+static char lastCardSig[256] = "";
+
+static void cardSignature(char* buf, size_t sz, const V4Data& v, long now) {
+  int n = 0;
+  for (int i = 0; i < 3 && n < (int)sz; i++) {
+    const V4Card& c = v.cards[i];
+    char p[8], r[24];
+    if (c.valid) fmtPct(p, sizeof(p), c.pct); else snprintf(p, sizeof(p), "-");
+    fmtReset(r, sizeof(r), c.valid ? c.reset_at : 0, now);
+    const int fill = !c.valid ? -1 : c.pct >= 1.0f ? -2
+                   : (int)((c.pct < 0 ? 0 : c.pct) * (BAR_W - 2) + 0.5f);
+    n += snprintf(buf + n, sz - n, "%s|%d|%d|%s;", p, fill, c.valid && c.pct >= 0.8f, r);
+  }
+  char s[40];
+  fmtStrip(s, sizeof(s), v);
+  if (n < (int)sz) snprintf(buf + n, sz - n, "%s", s);
+}
+
+static void drawCardsRegion(DisplayST7305& d, const V4Data& data, long now) {
+  d.fillRect(CARDS_REGION_X0, 0, CARDS_REGION_X1 - CARDS_REGION_X0 + 1, LCD_H, false);
+  for (int i = 0; i < 3; i++) drawCard(d, CARD_Y[i], data.cards[i], now);
+  drawStrip(d, data);
 }
 
 // ── Mascot column ─────────────────────────────────────────────────────────────
@@ -129,15 +186,87 @@ static const int SPRITE_Y = 80;
 static const int STATUS_Y = 215;
 static const int S_STATUS = 2;   // 14 px cap, same as the card labels / reset lines
 
-static void drawMascotColumn(DisplayST7305& d) {
-  (void)MASCOT_Y; (void)MASCOT_H;
-  // Step 8: static idle pose only; the state machine arrives in step 9.
-  drawMascotIdle(d, SPRITE_X, SPRITE_Y);
-  const char* status = "idle";
-  d.drawText(MASCOT_X + (MASCOT_W - textWidth(status, S_STATUS)) / 2, STATUS_Y, status, S_STATUS);
+static MascotState autoState  = MascotState::Sleeping;  // from the latest data
+static int         forcedState = -1;                    // serial test override
+static MascotFrame lastFrame;
+static bool        haveFrame = false;
+
+static MascotState currentState() {
+  return forcedState >= 0 ? (MascotState)forcedState : autoState;
+}
+
+static void updateAutoState(const V4Data& v) {
+  bool online = false;
+  float maxPct = 0.0f;
+  for (int i = 0; i < 3; i++) {
+    if (!v.cards[i].valid) continue;
+    online = true;
+    if (v.cards[i].pct > maxPct) maxPct = v.cards[i].pct;
+  }
+  autoState = mascotStateFor(online, maxPct);
+}
+
+static void drawMascotRegion(DisplayST7305& d, const MascotFrame& f) {
+  // Critical is drawn inverted: black panel, white creature and label.
+  const bool inv = (f.state == MascotState::Critical);
+  const bool ink = !inv;
+
+  d.fillRect(MASCOT_REGION_X0, 0, MASCOT_REGION_X1 - MASCOT_REGION_X0 + 1, LCD_H, false);
+  if (inv) d.fillRect(MASCOT_X, MASCOT_Y, MASCOT_W, MASCOT_H, true);
+
+  drawMascot(d, SPRITE_X, SPRITE_Y, f, ink);
+
+  if (f.state == MascotState::Sleeping) {
+    // "z" always, "Z" on alternate frames, top-right as in the design preview.
+    d.drawText(SPRITE_X + 70, SPRITE_Y - 18, "z", 2, ink);
+    if (f.zz) d.drawText(SPRITE_X + 84, SPRITE_Y - 40, "Z", 3, ink);
+  }
+
+  const char* status = mascotStateName(f.state);
+  d.drawText(MASCOT_X + (MASCOT_W - textWidth(status, S_STATUS)) / 2, STATUS_Y, status,
+             S_STATUS, ink);
 }
 
 // ── Public ────────────────────────────────────────────────────────────────────
+
+void v4RenderFull(DisplayST7305& disp, const V4Data& data, long now, uint32_t ms) {
+  updateAutoState(data);
+  lastFrame = mascotFrameAt(currentState(), ms);
+  haveFrame = true;
+  cardSignature(lastCardSig, sizeof(lastCardSig), data, now);
+
+  disp.clear();
+  drawMascotRegion(disp, lastFrame);
+  drawCardsRegion(disp, data, now);
+  disp.refresh();
+}
+
+bool v4UpdateCards(DisplayST7305& disp, const V4Data& data, long now) {
+  updateAutoState(data);   // the mascot picks this up on its next tick
+  char sig[sizeof(lastCardSig)];
+  cardSignature(sig, sizeof(sig), data, now);
+  if (strcmp(sig, lastCardSig) == 0) return false;
+  memcpy(lastCardSig, sig, sizeof(sig));
+  drawCardsRegion(disp, data, now);
+  pushColumns(disp, CARDS_REGION_X0, CARDS_REGION_X1);
+  return true;
+}
+
+bool v4TickMascot(DisplayST7305& disp, uint32_t ms) {
+  const MascotFrame f = mascotFrameAt(currentState(), ms);
+  if (haveFrame && f == lastFrame) return false;
+  lastFrame = f;
+  haveFrame = true;
+  drawMascotRegion(disp, f);
+  pushColumns(disp, MASCOT_REGION_X0, MASCOT_REGION_X1);
+  return true;
+}
+
+void v4ForceMascotState(int state) {
+  forcedState = (state >= 0 && state < MASCOT_STATE_COUNT) ? state : -1;
+}
+
+const char* v4MascotStateName() { return mascotStateName(currentState()); }
 
 static V4Card makeCard(const char* label, bool valid, float pct, long reset_at) {
   V4Card c;
@@ -163,15 +292,4 @@ V4Data v4FromStats(const StatsData& s, long now) {
   v.month_usd   = s.month.usd;
   v.month_lim   = s.month.lim;
   return v;
-}
-
-void renderV4Layout(DisplayST7305& disp, const V4Data& data, long now) {
-  disp.clear();
-
-  drawMascotColumn(disp);
-
-  for (int i = 0; i < 3; i++) drawCard(disp, CARD_Y[i], data.cards[i], now);
-  drawStrip(disp, data);
-
-  disp.refresh();
 }

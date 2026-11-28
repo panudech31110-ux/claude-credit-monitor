@@ -26,11 +26,15 @@ public:
   void begin();
   void clear();                                      // fill white
   void setPixel(int x, int y, bool on);             // on=true → black
-  void drawText(int x, int y, const char* txt, int size = 1);
+  void drawText(int x, int y, const char* txt, int size = 1, bool on = true);
   void drawRect(int x, int y, int w, int h, bool on);
   void drawHLine(int x, int y, int w, bool on);
   void fillRect(int x, int y, int w, int h, bool on);
   void refresh();                                    // push fb → display
+  // Push only screen columns x0..x1 (inclusive; widened to whole column pairs).
+  // The framebuffer stores each x pair as one 75-byte panel row, so this is a
+  // single contiguous write of (pairs × 75) bytes instead of 15 000.
+  void refreshColumns(int x0, int x1);
 
 private:
   uint8_t* fb = nullptr;

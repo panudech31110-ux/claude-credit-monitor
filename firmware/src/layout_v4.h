@@ -23,5 +23,18 @@ struct V4Data {
 // than 15 min), month block → bottom strip.
 V4Data v4FromStats(const StatsData& s, long now);
 
-// Draws the full v4 view into the framebuffer and refreshes the panel.
-void renderV4Layout(DisplayST7305& disp, const V4Data& data, long now);
+// Redraws the whole v4 view and pushes the full frame (first draw / view switch).
+void v4RenderFull(DisplayST7305& disp, const V4Data& data, long now, uint32_t ms);
+
+// Redraws + pushes only the card column, and only if what it would show changed
+// (values, bar, or a countdown minute). Also updates the mascot's state from the
+// data. Returns true if it redrew.
+bool v4UpdateCards(DisplayST7305& disp, const V4Data& data, long now);
+
+// Call often (every loop tick). Redraws + pushes only the mascot column, and only
+// when the animation frame changed. Returns true if it redrew.
+bool v4TickMascot(DisplayST7305& disp, uint32_t ms);
+
+// Test override: 0..5 = sleeping, idle, active, busy, critical, worried; -1 = auto.
+void v4ForceMascotState(int state);
+const char* v4MascotStateName();

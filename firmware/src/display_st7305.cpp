@@ -228,7 +228,7 @@ void DisplayST7305::fillRect(int x, int y, int w, int h, bool on) {
 
 // drawText: renders ASCII 0x20–0x7E using the 5×8 bitmap font.
 // Each character cell is 6×8 logical pixels (5 + 1 spacing) scaled by `size`.
-void DisplayST7305::drawText(int x, int y, const char* txt, int size) {
+void DisplayST7305::drawText(int x, int y, const char* txt, int size, bool on) {
   int cx = x;
   for (; *txt; ++txt) {
     uint8_t c = (uint8_t)*txt;
@@ -240,7 +240,7 @@ void DisplayST7305::drawText(int x, int y, const char* txt, int size) {
         if ((colData >> row) & 1) {
           for (int sy = 0; sy < size; sy++)
             for (int sx = 0; sx < size; sx++)
-              setPixel(cx + col * size + sx, y + row * size + sy, true);
+              setPixel(cx + col * size + sx, y + row * size + sy, on);
         }
       }
     }
@@ -263,6 +263,29 @@ void DisplayST7305::refresh() {
   _spi.transfer(0x2C);           // memory write command
   digitalWrite(LCD_DC, HIGH);   // switch to data
   _spi.transferBytes(fb, nullptr, (size_t)LCD_W * LCD_H / 8);
+  digitalWrite(LCD_CS, HIGH);
+  _spi.endTransaction();
+}
+
+// refreshColumns: same as refresh(), but the row window (0x2B, one row per x
+// pair — see setPixel's idx formula) is narrowed to the requested x range.
+void DisplayST7305::refreshColumns(int x0, int x1) {
+  if (!fb) return;
+  if (x0 < 0) x0 = 0;
+  if (x1 > LCD_W - 1) x1 = LCD_W - 1;
+  if (x0 > x1) return;
+  const int p0 = x0 >> 1, p1 = x1 >> 1;      // 0..199
+  const int rowBytes = LCD_H >> 2;           // 75
+
+  writeCmd(0x2A); writeData(0x12); writeData(0x2A);          // all columns
+  writeCmd(0x2B); writeData((uint8_t)p0); writeData((uint8_t)p1);
+
+  _spi.beginTransaction(_spiCfg);
+  digitalWrite(LCD_DC, LOW);
+  digitalWrite(LCD_CS, LOW);
+  _spi.transfer(0x2C);
+  digitalWrite(LCD_DC, HIGH);
+  _spi.transferBytes(fb + (size_t)p0 * rowBytes, nullptr, (size_t)(p1 - p0 + 1) * rowBytes);
   digitalWrite(LCD_CS, HIGH);
   _spi.endTransaction();
 }

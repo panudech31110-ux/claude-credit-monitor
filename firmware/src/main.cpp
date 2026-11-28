@@ -23,6 +23,7 @@ static bool userPrevHigh = true;
 // KEY cycles views: 0 = v4 main (mascot + cards), 1 = v3 month/legacy layout.
 static const int VIEW_V4 = 0, VIEW_LEGACY = 1, VIEW_COUNT = 2;
 static int  viewMode      = VIEW_V4;
+static bool v4NeedsFull   = true;   // next v4 render must redraw + push everything
 
 // Returns true once per press (falling edge). prevHigh holds the last sampled level.
 static bool buttonPressed(int pin, bool& prevHigh) {
@@ -201,13 +202,32 @@ static bool fetchStats(StatsData& out) {
 
 // ── Render cycle ──────────────────────────────────────────────────────────────
 
-// Draws whichever view is selected.
+// Draws whichever view is selected. In v4, after the first full draw only the
+// card column is redrawn, and only when what it shows changed.
 static void renderCurrentView() {
   if (viewMode == VIEW_V4) {
     time_t now; time(&now);
-    renderV4Layout(disp, v4FromStats(lastGood, (long)now), (long)now);
+    const V4Data v = v4FromStats(lastGood, (long)now);
+    if (v4NeedsFull) {
+      v4RenderFull(disp, v, (long)now, millis());
+      v4NeedsFull = false;
+    } else if (v4UpdateCards(disp, v, (long)now)) {
+      Serial.println("cards changed → redrawn");
+    }
   } else {
     renderLayout(disp, lastGood);
+  }
+}
+
+// Serial test hook for the mascot: send 0-5 to force a state
+// (sleeping, idle, active, busy, critical, worried), 'a' for automatic.
+static void handleSerial() {
+  while (Serial.available()) {
+    int ch = Serial.read();
+    if (ch >= '0' && ch <= '5')  v4ForceMascotState(ch - '0');
+    else if (ch == 'a')          v4ForceMascotState(-1);
+    else continue;
+    Serial.printf("mascot state → %s%s\n", v4MascotStateName(), ch == 'a' ? " (auto)" : " (forced)");
   }
 }
 
@@ -269,6 +289,10 @@ void loop() {
   while (!forceFetch && (long)(millis() - fetchAt) < 0) {
     delay(100);
 
+    // Mascot animation runs on its own cadence; it only pushes its own column.
+    handleSerial();
+    if (viewMode == VIEW_V4 && !v4NeedsFull) v4TickMascot(disp, millis());
+
     // BOOT → force an immediate /stats fetch
     if (buttonPressed(BTN_BOOT, bootPrevHigh)) {
       Serial.println("BOOT button → forcing refresh");
@@ -278,6 +302,7 @@ void loop() {
     // USER (KEY) → toggle v4 main view ↔ v3 legacy view
     if (buttonPressed(BTN_USER, userPrevHigh)) {
       viewMode = (viewMode + 1) % VIEW_COUNT;
+      v4NeedsFull = true;
       Serial.printf("USER button → viewMode=%d (%s)\n", viewMode,
                     viewMode == VIEW_V4 ? "v4" : "legacy");
       renderCurrentView();
