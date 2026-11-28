@@ -8,6 +8,7 @@
 #include <time.h>
 #include "display_st7305.h"
 #include "layout.h"
+#include "layout_v4.h"
 #include "config.h"
 
 static DisplayST7305 disp;
@@ -19,7 +20,9 @@ static bool           hasData = false;
 // fire on the HIGH→LOW edge; sampling every 100 ms in loop() is its own debounce.
 static bool bootPrevHigh = true;   // idle (pull-up) = HIGH
 static bool userPrevHigh = true;
-static int  viewMode      = 0;     // reserved for future view cycling (no-op)
+// KEY cycles views: 0 = v4 main (mascot + cards), 1 = v3 month/legacy layout.
+static const int VIEW_V4 = 0, VIEW_LEGACY = 1, VIEW_COUNT = 2;
+static int  viewMode      = VIEW_V4;
 
 // Returns true once per press (falling edge). prevHigh holds the last sampled level.
 static bool buttonPressed(int pin, bool& prevHigh) {
@@ -175,6 +178,16 @@ static bool fetchStats(StatsData& out) {
 
 // ── Render cycle ──────────────────────────────────────────────────────────────
 
+// Draws whichever view is selected. v4 uses placeholder card data (step 6).
+static void renderCurrentView() {
+  if (viewMode == VIEW_V4) {
+    time_t now; time(&now);
+    renderV4Layout(disp, v4PlaceholderData((long)now), (long)now);
+  } else {
+    renderLayout(disp, lastGood);
+  }
+}
+
 static void doRender(bool fetchOk, StatsData& fresh) {
   stampTime(fresh.timestamp);
   fresh.today_dow   = currentDow();
@@ -191,7 +204,7 @@ static void doRender(bool fetchOk, StatsData& fresh) {
   }
   // If !hasData and !fetchOk, lastGood is zero-initialised — renders a blank screen with "!"
 
-  renderLayout(disp, lastGood);
+  renderCurrentView();
 }
 
 // ── Entry points ──────────────────────────────────────────────────────────────
@@ -239,18 +252,19 @@ void loop() {
       forceFetch = true;
     }
 
-    // USER → cycle view (scaffolded no-op; just redraw current data for now)
+    // USER (KEY) → toggle v4 main view ↔ v3 legacy view
     if (buttonPressed(BTN_USER, userPrevHigh)) {
-      viewMode = (viewMode + 1) % 3;
-      Serial.printf("USER button → viewMode=%d (view cycling not yet implemented)\n", viewMode);
-      if (hasData) renderLayout(disp, lastGood);
+      viewMode = (viewMode + 1) % VIEW_COUNT;
+      Serial.printf("USER button → viewMode=%d (%s)\n", viewMode,
+                    viewMode == VIEW_V4 ? "v4" : "legacy");
+      renderCurrentView();
     }
 
     if (WiFi.status() != WL_CONNECTED) {
       Serial.println("WiFi lost — reconnecting");
       lastGood.fetch_error = true;
       stampTime(lastGood.timestamp);
-      renderLayout(disp, lastGood);   // show "!" while reconnecting
+      renderCurrentView();            // legacy view shows "!" while reconnecting
       connectWiFi();
     }
   }

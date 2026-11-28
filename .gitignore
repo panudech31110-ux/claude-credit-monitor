@@ -22,3 +22,6 @@ Thumbs.db
 # v4 bridge local config (holds INGEST_SECRET)
 bridge/.env
 bridge/bridge.log*
+
+# Python bytecode cache
+__pycache__/
