@@ -1,4 +1,5 @@
 #include "layout_v4.h"
+#include "mascot.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -120,6 +121,22 @@ static void drawStrip(DisplayST7305& d, const V4Data& data) {
   d.drawText(CARD_X + PAD_X, STRIP_Y + (20 - CAP * S_STRIP) / 2, line, S_STRIP);
 }
 
+// ── Mascot column ─────────────────────────────────────────────────────────────
+// 100×100 sprite centred horizontally in the 130 px column at the spec's y=80,
+// one-word status label below it at y=215 (spec), centred.
+static const int SPRITE_X = MASCOT_X + (MASCOT_W - MASCOT_SIZE) / 2;  // 25
+static const int SPRITE_Y = 80;
+static const int STATUS_Y = 215;
+static const int S_STATUS = 2;   // 14 px cap, same as the card labels / reset lines
+
+static void drawMascotColumn(DisplayST7305& d) {
+  (void)MASCOT_Y; (void)MASCOT_H;
+  // Step 8: static idle pose only; the state machine arrives in step 9.
+  drawMascotIdle(d, SPRITE_X, SPRITE_Y);
+  const char* status = "idle";
+  d.drawText(MASCOT_X + (MASCOT_W - textWidth(status, S_STATUS)) / 2, STATUS_Y, status, S_STATUS);
+}
+
 // ── Public ────────────────────────────────────────────────────────────────────
 
 static V4Card makeCard(const char* label, bool valid, float pct, long reset_at) {
@@ -151,8 +168,7 @@ V4Data v4FromStats(const StatsData& s, long now) {
 void renderV4Layout(DisplayST7305& disp, const V4Data& data, long now) {
   disp.clear();
 
-  // Mascot column (MASCOT_X..+W, MASCOT_Y..+H) stays empty until step 8.
-  (void)MASCOT_X; (void)MASCOT_Y; (void)MASCOT_W; (void)MASCOT_H;
+  drawMascotColumn(disp);
 
   for (int i = 0; i < 3; i++) drawCard(disp, CARD_Y[i], data.cards[i], now);
   drawStrip(disp, data);
