@@ -303,6 +303,56 @@ The display shows "connecting…" → "syncing time…" → "fetching…" → fu
 
 ---
 
+## Part 3 — v4 laptop bridge (Claude Code usage)
+
+`bridge/bridge.py` reads your local Claude Code usage via [ccusage](https://github.com/ryoppippi/ccusage) and POSTs it to the Worker's `/ingest-cc` endpoint. Run it every 5 minutes with Windows Task Scheduler.
+
+```bash
+python bridge/bridge.py --dry-run   # build the payload and print it, nothing sent
+python bridge/bridge.py             # build and send; one line appended to bridge/bridge.log
+```
+
+### Schedule it every 5 minutes (Windows Task Scheduler)
+
+The repo includes a script that registers the task:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File bridge\install-task.ps1
+```
+
+It creates a task named **ClaudeUsageBridge** with these settings:
+
+| Setting | Value |
+|---|---|
+| Trigger | Every 5 minutes, indefinitely (first run ~1 min after install) |
+| Action | `pythonw.exe "<project>\bridge\bridge.py"` (pythonw = no console flash) |
+| Start in | the project folder |
+| Runs as | you, only while you're logged on (ccusage reads your profile's Claude Code logs) |
+| On battery | allowed, and not stopped when unplugged (Windows' default would skip runs on a laptop) |
+| Missed runs | run as soon as possible after a missed start (e.g. after sleep) |
+| Overlap / time limit | a new run is skipped if one is still going; each run is killed after 2 min |
+
+`install-task.ps1` uses the `pythonw.exe` next to the first real `python.exe` on PATH, skipping the Microsoft Store stub. Pass `-PythonW <path>` to choose a different one. Re-running the script replaces the task.
+
+**"Run whether user is logged on or not"** (optional, keeps the bridge running behind the lock screen): open Task Scheduler → *ClaudeUsageBridge* → Properties → General, select that option, and enter your Windows password. The lock screen alone doesn't stop the default setup, because you're still logged on; only signing out does.
+
+**Check that it's running**
+
+```powershell
+Get-ScheduledTaskInfo ClaudeUsageBridge | Format-List LastRunTime, LastTaskResult, NextRunTime
+Get-Content bridge\bridge.log -Tail 5
+```
+
+`LastTaskResult` is `0` after a good run and `1` when the run failed; the reason is the matching `ERROR` line in `bridge.log`.
+
+**Remove it**
+
+```powershell
+Unregister-ScheduledTask -TaskName ClaudeUsageBridge -Confirm:$false
+```
+
+---
+
 ## Migrating your client code
 
 Replace `api.anthropic.com` with the Worker URL and add `X-Proxy-Auth`. Your real Anthropic key stays in the Worker — clients never see it.
