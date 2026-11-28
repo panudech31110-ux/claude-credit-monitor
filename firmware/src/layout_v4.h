@@ -1,5 +1,6 @@
 #pragma once
 #include "display_st7305.h"
+#include "layout.h"
 
 // v4 main view: mascot column (left) + three boxed usage cards (right) + a
 // one-line month fallback strip. See v4-mascot-spec.md, Part 3.
@@ -18,8 +19,9 @@ struct V4Data {
   float  month_lim   = 0.0f;
 };
 
-// Step 6: hardcoded values for checking proportions on the real panel.
-V4Data v4PlaceholderData(long now);
+// Maps /stats data to the view: cc block → cards (offline when absent or older
+// than 15 min), month block → bottom strip.
+V4Data v4FromStats(const StatsData& s, long now);
 
 // Draws the full v4 view into the framebuffer and refreshes the panel.
 void renderV4Layout(DisplayST7305& disp, const V4Data& data, long now);

@@ -143,6 +143,22 @@ static bool fetchStats(StatsData& out) {
     out.month.projected_eom_pct = m["projected_eom_pct"] | 0.0f;
   }
 
+  // v4: cc block (optional). While bridge data is stale the Worker sends the old
+  // top-level "cc" number (cache-creation tokens) instead, so require an object.
+  JsonObject cc = doc["cc"].as<JsonObject>();
+  out.cc.valid = !cc.isNull();
+  if (out.cc.valid) {
+    out.cc.updated = cc["updated"] | 0L;
+    CcWindow* wins[3]        = {&out.cc.session, &out.cc.today, &out.cc.week};
+    const char* const names[3] = {"session", "today", "week"};
+    for (int i = 0; i < 3; i++) {
+      JsonObject w = cc[names[i]];
+      wins[i]->pct      = w["pct"]      | 0.0f;
+      wins[i]->cost     = w["cost"]     | 0.0f;
+      wins[i]->reset_at = w["reset_at"] | 0L;
+    }
+  }
+
   // v2: rate limits (optional)
   JsonObject rl = doc["rl"];
   out.rl_valid = !rl.isNull();
@@ -173,16 +189,23 @@ static bool fetchStats(StatsData& out) {
                   out.month.day_of_month, out.month.days_in_month);
   else
     Serial.println("  month: (absent — fallback to v2 layout)");
+  if (out.cc.valid)
+    Serial.printf("  cc: session $%.2f %.1f%%  today $%.2f %.1f%%  week $%.2f %.1f%%\n",
+                  (double)out.cc.session.cost, (double)out.cc.session.pct * 100,
+                  (double)out.cc.today.cost,   (double)out.cc.today.pct * 100,
+                  (double)out.cc.week.cost,    (double)out.cc.week.pct * 100);
+  else
+    Serial.println("  cc: (absent — bridge offline)");
   return true;
 }
 
 // ── Render cycle ──────────────────────────────────────────────────────────────
 
-// Draws whichever view is selected. v4 uses placeholder card data (step 6).
+// Draws whichever view is selected.
 static void renderCurrentView() {
   if (viewMode == VIEW_V4) {
     time_t now; time(&now);
-    renderV4Layout(disp, v4PlaceholderData((long)now), (long)now);
+    renderV4Layout(disp, v4FromStats(lastGood, (long)now), (long)now);
   } else {
     renderLayout(disp, lastGood);
   }

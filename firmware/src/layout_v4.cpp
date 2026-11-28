@@ -97,9 +97,9 @@ static void drawCard(DisplayST7305& d, int cy, const V4Card& c, long now) {
 
   drawBar(d, left, cy + Y_BAR, c.valid, c.pct);
 
+  // Offline → reset_at treated as unknown → "Resets in -".
   char rbuf[24];
-  if (c.valid) fmtReset(rbuf, sizeof(rbuf), c.reset_at, now);
-  else         snprintf(rbuf, sizeof(rbuf), "Bridge offline");
+  fmtReset(rbuf, sizeof(rbuf), c.valid ? c.reset_at : 0, now);
   d.drawText(left, cy + Y_RESET, rbuf, S_RESET);
 }
 
@@ -128,14 +128,23 @@ static V4Card makeCard(const char* label, bool valid, float pct, long reset_at) 
   return c;
 }
 
-V4Data v4PlaceholderData(long now) {
+// Same cutoff the Worker uses to hide the cc block. Re-checked here because the
+// firmware keeps showing last-good data when a /stats fetch fails.
+static const long CC_STALE_SECONDS = 15 * 60;
+
+V4Data v4FromStats(const StatsData& s, long now) {
+  const CcData& cc = s.cc;
+  // `now` is only trusted once NTP has synced (otherwise it's ~1970).
+  const bool clockOk = now > 1700000000L;
+  const bool fresh = cc.valid && (!clockOk || now - cc.updated < CC_STALE_SECONDS);
+
   V4Data v;
-  v.cards[0] = makeCard("CURRENT", true, 0.50f, now + 1 * 3600 + 22 * 60);
-  v.cards[1] = makeCard("TODAY",   true, 0.11f, now + 8 * 3600 + 15 * 60);
-  v.cards[2] = makeCard("WEEKLY",  true, 0.25f, now + 4 * 86400 + 8 * 3600);
-  v.month_valid = true;
-  v.month_usd   = 16.50f;
-  v.month_lim   = 500.0f;
+  v.cards[0] = makeCard("CURRENT", fresh, cc.session.pct, cc.session.reset_at);
+  v.cards[1] = makeCard("TODAY",   fresh, cc.today.pct,   cc.today.reset_at);
+  v.cards[2] = makeCard("WEEKLY",  fresh, cc.week.pct,    cc.week.reset_at);
+  v.month_valid = s.month.valid;
+  v.month_usd   = s.month.usd;
+  v.month_lim   = s.month.lim;
   return v;
 }
 
