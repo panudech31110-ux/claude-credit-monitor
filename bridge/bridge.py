@@ -5,23 +5,36 @@ Reads local Claude Code JSONL through `ccusage claude ...` (Claude only; plain
 5-hour block, today, and this Mon-Sun week, and scores each against the plan
 limits in bridge/.env.
 
-Step 3 of the v4 build: prints the payload only, nothing is sent.
+POSTs the payload to WORKER_URL/ingest-cc (X-Ingest-Auth: INGEST_SECRET) and
+appends the result to bridge/bridge.log (rotates at 10 MB). Uses no Anthropic
+keys. Run every 5 minutes from Windows Task Scheduler via pythonw.exe.
 
-Usage:  python bridge/bridge.py
+Usage:  python bridge/bridge.py            # build + send
+        python bridge/bridge.py --dry-run  # build + print, send nothing
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import logging
 import shutil
 import subprocess
 import sys
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import requests
+
 HERE = Path(__file__).resolve().parent
 ENV_PATH = HERE / ".env"
+LOG_PATH = HERE / "bridge.log"
+LOG_MAX_BYTES = 10 * 1024 * 1024
+HTTP_TIMEOUT_S = 20
+
+log = logging.getLogger("bridge")
 
 # Keeps a console window from flashing up when run via pythonw.exe.
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -107,10 +120,49 @@ def build_payload(env: dict[str, str]) -> dict:
     }
 
 
+def send(env: dict[str, str], payload: dict) -> None:
+    url = env["WORKER_URL"].rstrip("/") + "/ingest-cc"
+    resp = requests.post(
+        url, json=payload, timeout=HTTP_TIMEOUT_S,
+        headers={"X-Ingest-Auth": env["INGEST_SECRET"]},
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"POST {url} -> {resp.status_code}: {resp.text[:300]}")
+
+
+def setup_logging() -> None:
+    log.setLevel(logging.INFO)
+    fh = RotatingFileHandler(LOG_PATH, maxBytes=LOG_MAX_BYTES, backupCount=2, encoding="utf-8")
+    fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    log.addHandler(fh)
+    # pythonw.exe has no console (sys.stderr is None); only echo when there is one.
+    if sys.stderr is not None:
+        log.addHandler(logging.StreamHandler(sys.stderr))
+
+
+def summary(p: dict) -> str:
+    return "  ".join(
+        f"{k} ${p[k]['cost']:.2f} ({p[k]['pct'] * 100:.1f}%)" for k in ("session", "today", "week"))
+
+
 def main() -> int:
-    env = load_env(ENV_PATH)
-    payload = build_payload(env)
-    print(json.dumps(payload, indent=2))
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--dry-run", action="store_true", help="print the payload, don't send")
+    args = ap.parse_args()
+
+    if args.dry_run:
+        print(json.dumps(build_payload(load_env(ENV_PATH)), indent=2))
+        return 0
+
+    setup_logging()
+    try:
+        env = load_env(ENV_PATH)
+        payload = build_payload(env)
+        send(env, payload)
+    except Exception as e:  # one line per failed cycle; the next run retries
+        log.error("failed: %s", e)
+        return 1
+    log.info("sent  %s", summary(payload))
     return 0
 
 
