@@ -2,8 +2,8 @@
 
 Reads local Claude Code JSONL through `ccusage claude ...` (Claude only; plain
 `ccusage daily` also mixes in Codex and other agents), computes the current
-5-hour block, today, and this Mon-Sun week, and scores each against the plan
-limits in bridge/.env.
+5-hour block, today, and the plan week (since the last Wednesday 14:00 reset),
+and scores each against the plan limits in bridge/.env.
 
 POSTs the payload to WORKER_URL/ingest-cc (X-Ingest-Auth: INGEST_SECRET) and
 appends the result to bridge/bridge.log (rotates at 10 MB). Uses no Anthropic
@@ -35,6 +35,10 @@ LOG_MAX_BYTES = 10 * 1024 * 1024
 HTTP_TIMEOUT_S = 20
 
 log = logging.getLogger("bridge")
+
+# Pro weekly quota resets Wednesday 14:00 Bangkok (TIMEZONE in .env).
+WEEK_RESET_WEEKDAY = 2          # Monday=0 … Wednesday=2
+WEEK_RESET_TIME = time(14, 0)
 
 # Keeps a console window from flashing up when run via pythonw.exe.
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -85,14 +89,28 @@ def session_window(limit: float) -> dict:
     return window(active.get("costUSD", 0.0), active.get("totalTokens", 0), limit, end.timestamp())
 
 
+def week_start_for(now: datetime) -> datetime:
+    """Most recent weekly reset (Wednesday 14:00 local) that is <= now."""
+    days_back = (now.weekday() - WEEK_RESET_WEEKDAY) % 7
+    start = datetime.combine(now.date() - timedelta(days=days_back), WEEK_RESET_TIME,
+                             tzinfo=now.tzinfo)
+    if start > now:  # it's Wednesday, but before 14:00 → last week's reset
+        start -= timedelta(days=7)
+    return start
+
+
 def day_and_week_windows(tz: ZoneInfo, day_limit: float, week_limit: float) -> tuple[dict, dict]:
-    """One `daily` call from Monday to today covers both windows."""
+    """One `daily` call from the week's start date to today covers both windows."""
     now = datetime.now(tz)
     today = now.date()
-    monday = today - timedelta(days=today.weekday())
+    week_start = week_start_for(now)
 
+    # Approximation: ccusage --since is date-granular, so the whole start day
+    # (Wednesday) is counted, including usage from before the 14:00 reset.
+    # That only overstates the week by whatever was spent Wednesday 00:00-14:00
+    # just after a reset; most of the week's cost is far from the boundary.
     rows = run_ccusage(
-        "daily", "--since", monday.strftime("%Y%m%d"), "--until", today.strftime("%Y%m%d"),
+        "daily", "--since", week_start.strftime("%Y%m%d"), "--until", today.strftime("%Y%m%d"),
         "--timezone", str(tz),
     ).get("daily", [])
 
@@ -105,7 +123,8 @@ def day_and_week_windows(tz: ZoneInfo, day_limit: float, week_limit: float) -> t
 
     today_w = window(today_row.get("totalCost", 0.0), today_row.get("totalTokens", 0),
                      day_limit, midnight(today + timedelta(days=1)))
-    week_w = window(week_cost, week_tok, week_limit, midnight(monday + timedelta(days=7)))
+    week_w = window(week_cost, week_tok, week_limit,
+                    (week_start + timedelta(days=7)).timestamp())
     return today_w, week_w
 
 

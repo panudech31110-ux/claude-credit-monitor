@@ -44,7 +44,7 @@ The bridge only needs a shared `INGEST_SECRET`; it never sees or uses an Anthrop
 │ │          │  │ Resets in 8h 15m             ││
 │ │ mascot   │  └──────────────────────────────┘│
 │ │ column   │  ┌──────────────────────────────┐│
-│ │          │  │ WEEKLY                   25% ││  Mon–Sun week (Bangkok)
+│ │          │  │ WEEKLY                   25% ││  plan week, resets Wed 14:00 (Bangkok)
 │ │          │  │ [█████░░░░░░░░░░░░░░░░░░░░]  ││
 │ │          │  │ Resets in 4d 8h              ││
 │ └──────────┘  └──────────────────────────────┘│
@@ -286,7 +286,7 @@ The mascot and card columns are pushed to the panel separately (`DisplayST7305::
 |---|---|---|
 | CURRENT | `ccusage claude blocks --active`: the active 5-hour block | when the block ends (`0`/unknown if no block is running) |
 | TODAY | `ccusage claude daily`: today's row | midnight in `TIMEZONE` |
-| WEEKLY | `ccusage claude daily` from Monday to today, summed | Monday 00:00 in `TIMEZONE` |
+| WEEKLY | `ccusage claude daily` from the last Wednesday-14:00 reset's date to today, summed (the whole Wednesday counts, since `--since` is per day) | next Wednesday 14:00 in `TIMEZONE` (`WEEK_RESET_*` in `bridge.py`) |
 
 It uses `ccusage claude …` on purpose: plain `ccusage daily` (v20+) also counts Codex and other coding agents.
 
