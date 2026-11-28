@@ -4,6 +4,8 @@ export interface Env {
   PROXY_SHARED_SECRET: string;
   // v3: monthly spend cap for the budget bar ([vars] in wrangler.toml).
   MONTHLY_LIMIT_USD?: string;
+  // v4: shared secret for POST /ingest-cc from the laptop bridge.
+  INGEST_SECRET?: string;
 }
 
 export interface RateLimitData {

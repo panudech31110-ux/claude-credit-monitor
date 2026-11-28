@@ -18,3 +18,7 @@ proxy/.wrangler/
 # OS
 .DS_Store
 Thumbs.db
+
+# v4 bridge local config (holds INGEST_SECRET)
+bridge/.env
+bridge/bridge.log*

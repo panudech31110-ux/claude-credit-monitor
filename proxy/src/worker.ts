@@ -1,5 +1,6 @@
 import type { Env, AnthropicUsage, RateLimitData } from "./types";
 import { handleStats } from "./stats";
+import { handleIngestCc } from "./ingest";
 import { getPricing, calcCost } from "./pricing";
 
 const ANTHROPIC_BASE = "https://api.anthropic.com";
@@ -7,13 +8,18 @@ const DEFAULT_VERSION = "2023-06-01";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+
+    // v4: bridge ingest uses its own secret (X-Ingest-Auth), checked in the handler.
+    if (url.pathname === "/ingest-cc") {
+      return handleIngestCc(request, env);
+    }
+
     // Accept X-Proxy-Auth (firmware/curl) or x-api-key (Anthropic SDK / Claude Code)
     const secret = request.headers.get("X-Proxy-Auth") ?? request.headers.get("x-api-key");
     if (!secret || secret !== env.PROXY_SHARED_SECRET) {
       return new Response("Unauthorized", { status: 401 });
     }
-
-    const url = new URL(request.url);
 
     if (url.pathname === "/stats") {
       return handleStats(request, env);

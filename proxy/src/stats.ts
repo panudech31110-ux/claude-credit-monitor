@@ -1,4 +1,5 @@
 import type { Env } from "./types";
+import { loadCcBlock } from "./ingest";
 
 const DEFAULT_MONTHLY_LIMIT_USD = 500;
 
@@ -37,7 +38,7 @@ export async function handleStats(
   _request: Request,
   env: Env,
 ): Promise<Response> {
-  const [totals, day, week, buckets, rlRow, monthRow] = await Promise.all([
+  const [totals, day, week, buckets, rlRow, monthRow, ccBlock] = await Promise.all([
     env.DB.prepare(`
       SELECT
         COALESCE(SUM(input_tokens),0)          AS in_,
@@ -88,6 +89,9 @@ export async function handleStats(
       FROM usage
       WHERE ts >= strftime('%s','now','+7 hours','start of month','-7 hours')
     `).first<MonthRow>(),
+
+    // v4: Claude Code usage from the bridge; null when never ingested or stale.
+    loadCcBlock(env),
   ]);
 
   const body: Record<string, unknown> = {
@@ -132,6 +136,9 @@ export async function handleStats(
       monthLimit,
     );
   }
+
+  // v4: absent → firmware shows "bridge offline".
+  if (ccBlock) body.cc = ccBlock;
 
   return new Response(JSON.stringify(body), {
     headers: { "Content-Type": "application/json" },
