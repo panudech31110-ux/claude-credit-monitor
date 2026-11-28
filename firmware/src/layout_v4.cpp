@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 
 // ── Geometry (v4-mascot-spec.md, "Precise geometry") ─────────────────────────
 // Outer padding 10 px. Mascot column x=10..140, cards x=150..390.
@@ -60,6 +61,20 @@ static void fmtReset(char* buf, size_t sz, long reset_at, long now) {
   else             snprintf(buf, sz, "Resets in %ldm", m);
 }
 
+// "Resets at 00:00" — reset time as a local (Bangkok, set by configTime) 24h clock.
+static void fmtResetClock(char* buf, size_t sz, long reset_at) {
+  time_t t = (time_t)reset_at;
+  struct tm tmv;
+  localtime_r(&t, &tmv);
+  snprintf(buf, sz, "Resets at %02d:%02d", tmv.tm_hour, tmv.tm_min);
+}
+
+// The reset line a card shows. Offline / unknown → "Resets in -" for every card.
+static void fmtCardReset(char* buf, size_t sz, const V4Card& c, long now) {
+  if (c.valid && c.reset_clock && c.reset_at > 0) fmtResetClock(buf, sz, c.reset_at);
+  else fmtReset(buf, sz, c.valid ? c.reset_at : 0, now);
+}
+
 // ── Bar (spec: Bar fill rules) ───────────────────────────────────────────────
 //   always: 1 px outline, fill proportional to min(1, pct)
 //   >= 80%: extra 1 px ring 2 px outside the bar (warning)
@@ -98,9 +113,8 @@ static void drawCard(DisplayST7305& d, int cy, const V4Card& c, long now) {
 
   drawBar(d, left, cy + Y_BAR, c.valid, c.pct);
 
-  // Offline → reset_at treated as unknown → "Resets in -".
   char rbuf[24];
-  fmtReset(rbuf, sizeof(rbuf), c.valid ? c.reset_at : 0, now);
+  fmtCardReset(rbuf, sizeof(rbuf), c, now);
   d.drawText(left, cy + Y_RESET, rbuf, S_RESET);
 }
 
@@ -111,17 +125,31 @@ static void fmtDollar(char* buf, size_t sz, float usd) {
   else               snprintf(buf, sz, "$%.2f", (double)usd);
 }
 
-static void fmtStrip(char* buf, size_t sz, const V4Data& data) {
+// "Month $16.50/$500  Next: 1/Dec/2026" — next reset = 1st of next month, local
+// (Bangkok) time. At ×1 (6 px/char) the text column (x=160..380) fits 36 chars;
+// the longest realistic line ("Month $99.99/$1000  Next: 1/Dec/2026") is exactly
+// 36, while "Next reset" would need 41, so the short label is used.
+// Before NTP sync the date is left off.
+static void fmtStrip(char* buf, size_t sz, const V4Data& data, long now) {
   if (!data.month_valid) { buf[0] = '\0'; return; }
   char u[12], l[12];
   fmtDollar(u, sizeof(u), data.month_usd);
   fmtDollar(l, sizeof(l), data.month_lim);
-  snprintf(buf, sz, "Month %s/%s", u, l);
+  if (now <= 1700000000L) { snprintf(buf, sz, "Month %s/%s", u, l); return; }
+
+  static const char* const MON[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  time_t t = (time_t)now;
+  struct tm tmv;
+  localtime_r(&t, &tmv);
+  int mon = tmv.tm_mon + 1, year = tmv.tm_year + 1900;   // month after this one
+  if (mon == 12) { mon = 0; year++; }
+  snprintf(buf, sz, "Month %s/%s  Next: 1/%s/%d", u, l, MON[mon], year);
 }
 
-static void drawStrip(DisplayST7305& d, const V4Data& data) {
-  char line[40];
-  fmtStrip(line, sizeof(line), data);
+static void drawStrip(DisplayST7305& d, const V4Data& data, long now) {
+  char line[48];
+  fmtStrip(line, sizeof(line), data, now);
   // Vertically centred in y=270..290, aligned with the card text column.
   if (line[0]) d.drawText(CARD_X + PAD_X, STRIP_Y + (20 - CAP * S_STRIP) / 2, line, S_STRIP);
 }
@@ -162,20 +190,20 @@ static void cardSignature(char* buf, size_t sz, const V4Data& v, long now) {
     const V4Card& c = v.cards[i];
     char p[8], r[24];
     if (c.valid) fmtPct(p, sizeof(p), c.pct); else snprintf(p, sizeof(p), "-");
-    fmtReset(r, sizeof(r), c.valid ? c.reset_at : 0, now);
+    fmtCardReset(r, sizeof(r), c, now);
     const int fill = !c.valid ? -1 : c.pct >= 1.0f ? -2
                    : (int)((c.pct < 0 ? 0 : c.pct) * (BAR_W - 2) + 0.5f);
     n += snprintf(buf + n, sz - n, "%s|%d|%d|%s;", p, fill, c.valid && c.pct >= 0.8f, r);
   }
-  char s[40];
-  fmtStrip(s, sizeof(s), v);
+  char s[48];
+  fmtStrip(s, sizeof(s), v, now);
   if (n < (int)sz) snprintf(buf + n, sz - n, "%s", s);
 }
 
 static void drawCardsRegion(DisplayST7305& d, const V4Data& data, long now) {
   d.fillRect(CARDS_REGION_X0, 0, CARDS_REGION_X1 - CARDS_REGION_X0 + 1, LCD_H, false);
   for (int i = 0; i < 3; i++) drawCard(d, CARD_Y[i], data.cards[i], now);
-  drawStrip(d, data);
+  drawStrip(d, data, now);
 }
 
 // ── Mascot column ─────────────────────────────────────────────────────────────
@@ -287,6 +315,7 @@ V4Data v4FromStats(const StatsData& s, long now) {
   V4Data v;
   v.cards[0] = makeCard("CURRENT", fresh, cc.session.pct, cc.session.reset_at);
   v.cards[1] = makeCard("TODAY",   fresh, cc.today.pct,   cc.today.reset_at);
+  v.cards[1].reset_clock = true;   // "Resets at 00:00" instead of a countdown
   v.cards[2] = makeCard("WEEKLY",  fresh, cc.week.pct,    cc.week.reset_at);
   v.month_valid = s.month.valid;
   v.month_usd   = s.month.usd;

@@ -10,6 +10,7 @@ struct V4Card {
   bool        valid    = false;  // false → "—"-style offline card
   float       pct      = 0.0f;   // ratio: 0.5 = 50%
   long        reset_at = 0;      // unix seconds; 0 = unknown
+  bool        reset_clock = false;  // true → "Resets at HH:MM" (local 24h), false → countdown
 };
 
 struct V4Data {
